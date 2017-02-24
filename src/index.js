@@ -1,13 +1,20 @@
 import Nprogress from 'nprogress'
 import * as util from './util'
-import {onReloadJson, onReloadJavascript, notifyView} from './notify'
 import Bus from './bus'
-import {navigateBack, navigateTo, currentView} from './viewManage'
-import {onBack} from './service'
+import {eachView, navigateBack, navigateTo, currentView} from './viewManage'
+import {onBack, lifeSycleEvent, toAppService} from './service'
 import toast from './component/toast'
 import tabbar from './tabbar'
-import {lifeSycleEvent} from './service'
+import debounce from 'debounce'
+import * as nativeMethods from './native'
 require('./message')
+
+let ua = navigator.userAgent
+Object.defineProperty(navigator, 'userAgent', {
+  get : function () {
+    return ua + ' weapp'
+  }
+})
 
 Nprogress.start()
 
@@ -15,6 +22,17 @@ Bus.on('back', () => {
   let curr = currentView()
   navigateBack()
   if (!curr.external) onBack()
+})
+
+Bus.on('share', () => {
+  toAppService({
+    msg: {
+      data: {
+        data: '{}'
+      },
+      eventName: "onShareAppMessage"
+    }
+  })
 })
 
 tabbar.on('active', pagePath => {
@@ -44,15 +62,21 @@ socket.onmessage = function (e) {
     if (!p) {
       util.reload()
     } else {
-      let isGlobal = pages.indexOf(p.replace(/\.(\w+)$/, '')) == -1
-      if (/\.json$/.test(p)) {
-        onReloadJson(p, isGlobal, data.content)
-      } else if (/\.wxss$/.test(p) || /\.wxml$/.test(p)) {
-        notifyView(p, isGlobal)
-      } else if (/\.js$/.test(p)) {
-        onReloadJavascript(p, isGlobal)
+      let path = p.replace(/\.(\w+)$/, '')
+      let isGlobal = pages.indexOf(path) == -1
+      if (isGlobal || /\.(js|json)$/.test(p) ) {
+        window.location.reload()
+        return
       }
-      // ignore unknow filetype
+      if (/\.wxss$/.test(p)) {
+        eachView(view => {
+          if (path == view.path) view.reloadWxss(p)
+        })
+      } else if (/\.wxml$/.test(p)) {
+        eachView(view => {
+          if (path == view.path) view.reloadWxml(path, isGlobal)
+        })
+      }
     }
   }
 }
@@ -66,3 +90,26 @@ window.addEventListener('unload', function () {
   socket.close()
 })
 
+window.addEventListener('resize', debounce(function () {
+  eachView(view => {
+    view.resizeWxss()
+  })
+}, 200))
+
+let serviceFrame = util.createFrame('service', '/appservice', true)
+Object.defineProperty(serviceFrame.contentWindow, 'prompt', {
+  get: function () {
+    return function (str) {
+      if (str.indexOf('____sdk____') !== 0) {
+        return console.warn(`Invalid prompt ${str}`)
+      }
+      let obj = JSON.parse(str.replace(/^____sdk____/, ''))
+      let method = obj.sdkName
+      if (nativeMethods.hasOwnProperty(method)) {
+        return JSON.stringify(nativeMethods[method](obj))
+      } else {
+        console.warn(`${method} not found on native.js`)
+      }
+    }
+  }
+})

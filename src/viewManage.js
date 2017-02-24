@@ -1,3 +1,4 @@
+import Nprogress from 'nprogress'
 import * as util from './util'
 import Bus from './bus'
 import View from './view'
@@ -29,6 +30,7 @@ export function redirectTo(path) {
   let pid = curr.pid
   curr.destroy()
   delete views[curr.id]
+  delete tabViews[curr.path]
   let v = curr = new View(path)
   curr.pid = pid
   views[curr.id] = v
@@ -53,13 +55,42 @@ export function navigateTo(path) {
   onRoute()
 }
 
-export function navigateBack() {
+export function switchTo(path) {
+  let p = normalize(path)
+  if (!util.isTabbar(p)) throw new Error(`Can't switchTab ${path} not in tabbar config`)
+  let find = false
+  Object.keys(views).forEach(key => {
+    let view = views[key]
+    if (p == view.path) {
+      find = view
+    } else if (!util.isTabbar(view.path)) {
+      view.destroy()
+      delete views[key]
+    }
+  })
+  if (!find) {
+    let v = curr = new View(p)
+    curr.pid = null
+    views[v.id] = v
+    tabViews[p] = curr
+  } else {
+    curr = find
+    curr.show()
+  }
+  Nprogress.done()
+  onRoute()
+}
+
+export function navigateBack(delta = 1, onBack) {
   if (!curr) throw new Error('Current page not exists')
-  let pid = curr.pid
-  if (pid == null) throw new Error(`Parent webview id not found on view-${curr.id}`)
-  curr.destroy()
-  delete views[curr.id]
-  curr = views[pid]
+  if (curr.pid == null) return
+  for (let i = delta; i > 0; i--) {
+    if (curr.pid == null) break;
+    curr.destroy()
+    delete views[curr.id]
+    curr = views[curr.pid]
+    if (onBack) onBack()
+  }
   curr.show()
   onRoute()
 }
@@ -91,15 +122,6 @@ export function eachView(fn) {
   let ids = getViewIds()
   ids.forEach(id => {
     fn.call(null, views[id])
-  })
-}
-
-export function notifyViews(msg) {
-  eachView(view => {
-    view.postMessage({
-      msg: msg,
-      command: 'CUSTOM'
-    })
   })
 }
 

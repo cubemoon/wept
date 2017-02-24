@@ -1,4 +1,6 @@
+*.diff
 lib
+docs
 src
 test
 .gitignore
@@ -7,3 +9,7 @@ gulpfile.js
 webpack.*.js
 Makefile
 *.map
+extensions
+.official
+.eslintrc
+case

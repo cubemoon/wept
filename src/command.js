@@ -1,3 +1,4 @@
+/*global __wxConfig__*/
 import Nprogress from 'nprogress'
 import filePicker from 'file-picker'
 import merge from 'merge'
@@ -5,33 +6,66 @@ import Upload from 'upload'
 import Serial from 'node-serial'
 import Bus from './bus'
 import * as viewManage from './viewManage'
-import {onNavigate, onLaunch} from './service'
+import {onNavigate, onLaunch, onBack} from './service'
 import header from './header'
 import throttle from 'throttleit'
 import {toAppService} from './service'
 import record from './sdk/record'
 import Compass from './sdk/compass'
 import storage from './sdk/storage'
+import Picker from './sdk/picker'
+import TimePicker from './sdk/timePicker'
+import DatePicker from './sdk/datePicker'
+import * as fileList from './sdk/fileList'
+import toast from './sdk/toast'
+import image from './sdk/image'
+import modal from './sdk/modal'
+import actionSheet from './sdk/actionsheet'
 import {once} from './event'
 import Preview from './component/preview'
 import confirm from './component/confirm'
-import toast from './component/toast'
+import Toast from './component/toast'
 import mask from './component/mask'
-import {getRedirectData, validPath} from './util'
-
-const doc = document.documentElement
-
+import qrscan from './component/qrscan'
+import {getRedirectData, validPath, dataURItoBlob, toNumber} from './util'
 
 let appData = {} //eslint-disable-line
 let fileIndex = 0
 let fileStore = {}
 
-// fix incorrect height when keyboard is up
-let height = 0
-document.addEventListener('DOMContentLoaded', function(e) { 
-  height = Math.max(doc.clientHeight, window.innerHeight || 0)
+Bus.on('reload', view => {
+  let p = view.path
+  let data = appData[p]
+  if (!data) throw new Error('AppData not found for ' + p)
+  let win = __wxConfig__.window
+  let winConfig = win.pages[p] || {}
+  let ptr = winConfig.enablePullDownRefresh || false
+  view.postMessage({
+    act: "sendMsgFromAppService",
+    id: Math.random(),
+    msg: {
+      eventName: "appDataChange",
+      data: {
+        data:{
+          data: data,
+          ext: {
+            webviewId: view.id,
+            enablePullDownRefresh: ptr
+          },
+          options: {
+            firstRender: true
+          }
+        }
+      },
+      sdkName: "publish",
+      to: "backgroundjs",
+      comefrom: "webframe",
+      command: "COMMAND_FROM_ASJS"
+    },
+    command: "MSG_FROM_APPSERVICE",
+  })
+  console.info('Reloaded ' + view.url)
 })
-
 
 export function getPublicLibVersion() {
   //ignore
@@ -41,11 +75,31 @@ export function systemLog() {
   //ignore
 }
 
+export function showShareMenu() {}
+
+export function switchTab(data) {
+  let url = data.args.url
+  Nprogress.start()
+  viewManage.switchTo(url)
+  onNavigate(data, 'switchTab')
+}
+
+export function shareAppMessage(data) {
+  let {desc, imgUrl, path, title} = data.args
+  modal({
+    title,
+    imgUrl,
+    content: desc
+  }).then(confirm => {
+    onSuccess(data, { confirm })
+  })
+}
+
 export function requestPayment(data) {
   confirm('确认支付吗？').then(() => {
-    onSuccess('requestPayment', data)
+    onSuccess(data, {statusCode: 200})
   }, () => {
-    onError('requestPayment', data)
+    onError(data)
   })
 }
 
@@ -56,7 +110,7 @@ export function previewImage(data) {
   let preview = new Preview(urls, {})
   preview.show()
   preview.active(current)
-  onSuccess('previewImage', data)
+  onSuccess(data)
 }
 
 export function PULLDOWN_REFRESH(data) {
@@ -76,12 +130,14 @@ export function stopPullDownRefresh(data) {
       command: "STOP_PULL_DOWN_REFRESH"
     })
   }
+  data.sdkName = 'stopPullDownRefresh'
+  onSuccess(data)
 }
 
 // publish event to views
 export function publish(data) {
   let all_ids = viewManage.getViewIds()
-  let ids = data.webviewIds || all_ids
+  let ids = toNumber(data.webviewIds) || all_ids
   data.act = 'sendMsgFromAppService'
   let obj = {
     msg: data,
@@ -94,22 +150,45 @@ export function publish(data) {
   })
 }
 
+export function scanCode(data) {
+  qrscan().then(val => {
+    onSuccess(data, {
+      result: val
+    })
+  }, () => {
+    onCancel(data)
+  })
+}
+
+export function WEBVIEW_READY (data) {
+  //console.log(data)
+}
+
 export function redirectTo(data) {
   Nprogress.start()
   viewManage.redirectTo(data.args.url)
-  onNavigate(data)
+  onNavigate(data, 'redirectTo')
 }
 
 export function navigateTo(data) {
+  let str = sessionStorage.getItem('routes')
+  if (str && str.split('|').length == 5) {
+    console.warn('WEPT: 当前页面栈已到达 5 个，请注意控制 navigateTo 深度')
+  }
   Nprogress.start()
   viewManage.navigateTo(data.args.url)
-  onNavigate(data)
+  onNavigate(data, 'navigateTo')
 }
 
 export function navigateBack(data) {
-  viewManage.navigateBack()
-  data.args.url = viewManage.currentView().url
-  onNavigate(data)
+  data.args = data.args || {}
+  data.args.url = viewManage.currentView().path + '.html'
+  let delta = data.args.delta ? Number(data.args.delta) : 1
+  if (isNaN(delta)) return Toast('Delta 必须为数字', {type: 'error'})
+  viewManage.navigateBack(delta, () => {
+    onBack()
+  })
+  onNavigate(data, 'navigateBack')
 }
 
 function getRoutes() {
@@ -120,7 +199,7 @@ function getRoutes() {
   if (!str) return path ? [path] : [root]
   let routes = str.split('|')
   if (routes.indexOf(path) !== routes.length - 1) {
-    return [path]
+    return path ? [path] : [root]
   }
   return routes
 }
@@ -130,6 +209,7 @@ export function APP_SERVICE_COMPLETE(data) { //eslint-disable-line
   let routes = getRoutes()
   let first = routes.shift()
   let valid = validPath(first)
+  if (!valid) console.warn(`Invalid route: ${first}, redirect to root`)
   // make sure root is valid page
   let root =  valid ? first : window.__root__
   viewManage.navigateTo(root)
@@ -159,7 +239,7 @@ export function APP_SERVICE_COMPLETE(data) { //eslint-disable-line
         mask.hide()
         if (err) {
           console.error(err.stack)
-          toast(err.message, {type: 'error'})
+          Toast(err.message, {type: 'error'})
           return
         }
       })
@@ -167,10 +247,67 @@ export function APP_SERVICE_COMPLETE(data) { //eslint-disable-line
   }
 }
 
+export function GET_APP_DATA(data) {
+  window.postMessage({
+    to: data.comefrom,
+    comefrom: 'backgroundjs',
+    msg: {
+      appData: appData
+    },
+    command: 'SEND_APP_DATA',
+  }, '*')
+}
+
+export function WRITE_APP_DATA(data) {
+  appData = data.data
+  toAppService({
+    command: 'WRITE_APP_DATA',
+    msg: appData
+  })
+}
+
+export function GET_APP_STORAGE(data) {
+  let res = storage.getAll()
+  window.postMessage({
+    to: data.comefrom,
+    msg: {
+      storage: res
+    },
+    command: 'SET_APP_STORAGE'
+  }, '*')
+}
+
+export function DELETE_APP_STORAGE(data) {
+  if (!data.data || !data.data.key) return console.error('key not found')
+  storage.remove(data.data.key)
+}
+
+export function SET_APP_STORAGE(data) {
+  let d = data.data
+  if (!d || !d.key || !d.type)  return console.error('wrong arguments')
+  storage.set(d.key, d.value, d.type)
+}
+
+storage.on('change', () => {
+  let res = storage.getAll()
+  window.postMessage({
+    to: 'devtools-storage',
+    msg: {
+      storage: res
+    },
+    command: 'SET_APP_STORAGE'
+  }, '*')
+})
+
 export function send_app_data(data) {
   appData = data.appData
-  // TODO edit for appData
-  //console.log(appData)
+  window.postMessage({
+    to: 'devtools-appdata',
+    msg: {
+      appData: appData
+    },
+    command: 'SEND_APP_DATA'
+  }, '*')
 }
 
 export function setNavigationBarTitle(data) {
@@ -195,9 +332,7 @@ export function chooseImage(data) {
       fileStore[blob] = file
       return blob
     })
-    onSuccess('chooseImage', data, {
-      tempFilePaths: paths
-    })
+    onSuccess(data, { tempFilePaths: paths })
   })
 }
 
@@ -211,7 +346,7 @@ export function chooseVideo(data) {
     video.onloadedmetadata = function () {
       let duration = video.duration
       let size = files[0].size
-      onSuccess('chooseVideo', data, {
+      onSuccess(data, {
         duration,
         size,
         height: video.videoHeight,
@@ -225,23 +360,24 @@ export function chooseVideo(data) {
 
 export function saveFile(data) {
   let blob = data.args.tempFilePath
-  if (!blob) return onError('saveFile', data, 'file path required')
+  if (!blob) return onError(data, 'file path required')
   let file = fileStore[blob]
-  if (!file) return onError('saveFile', data, 'file not found')
+  if (!file) return onError(data, 'file not found')
   let upload = new Upload(file)
   upload.to('/upload')
   upload.on('end', xhr => {
     if (xhr.status / 100 | 0 == 2) {
       let result = JSON.parse(xhr.responseText)
-      onSuccess('saveFile', data, {
+      onSuccess(data, {
+        statusCode: xhr.status,
         savedFilePath: result.file_path
       })
     } else {
-      onError('saveFile', data, `request error ${xhr.status}`)
+      onError(data, `request error ${xhr.status}`)
     }
   })
   upload.on('error', err => {
-    onError('saveFile', data, err.message)
+    onError(data, err.message)
   })
 }
 
@@ -290,19 +426,8 @@ export function enableAccelerometer() {
 
 export function getNetworkType(data) {
   let type = navigator.connection == null ? 'WIFI' : navigator.connection.type
-  onSuccess('getNetworkType', data, {
+  onSuccess(data, {
     networkType: type
-  })
-}
-
-export function getSystemInfo(data) {
-  onSuccess('getSystemInfo', data, {
-    model: /iPhone/.test(navigator.userAgent) ? 'iPhone6' : 'Android',
-    pixelRatio: window.devicePixelRatio || 1,
-    windowWidth: Math.max(doc.clientWidth, window.innerWidth || 0),
-    windowHeight: Math.max(height, Math.max(doc.clientHeight, window.innerHeight || 0)),
-    language: window.navigator.userLanguage || window.navigator.language,
-    version: "6.3.9"
   })
 }
 
@@ -310,13 +435,13 @@ export function getLocation(data) {
   if ("geolocation" in navigator) {
     navigator.geolocation.getCurrentPosition(position => {
       let coords = position.coords
-      onSuccess('getLocation', data, {
+      onSuccess(data, {
         longitude: coords.longitude,
         latitude: coords.latitude
       })
     })
   } else {
-    onError('getLocation', data, {
+    onError(data, {
       message: 'geolocation not supported'
     })
   }
@@ -327,9 +452,32 @@ export function openLocation(data) {
   let url = "http://apis.map.qq.com/tools/poimarker?type=0&marker=coord:" + args.latitude + "," + args.longitude + "&key=JMRBZ-R4HCD-X674O-PXLN4-B7CLH-42BSB&referer=wxdevtools"
   viewManage.openExternal(url)
   Nprogress.done()
-  onSuccess('openLocation', data, {
+  onSuccess(data, {
     latitude: args.latitude,
     longitude: args.longitude
+  })
+}
+
+export function chooseLocation(data) {
+  let url = `https://3gimg.qq.com/lightmap/components/locationPicker2/index.html?search=1&type=1&coord=39.90403%2C116.407526&key=JMRBZ-R4HCD-X674O-PXLN4-B7CLH-42BSB&referer=wxdevtools`
+  viewManage.openExternal(url)
+  Nprogress.done()
+  let called = false
+  Bus.once('back',() => {
+    if (!called) {
+      called = true
+      onCancel(data)
+    }
+  })
+  Bus.once('location', location => {
+    if (!called) {
+      called = true
+      if (location) {
+        onSuccess(data, location)
+      } else {
+        onCancel(data)
+      }
+    }
   })
 }
 
@@ -337,18 +485,18 @@ export function setStorage(data) {
   let args = data.args
   storage.set(args.key, args.data, args.dataType)
   if (args.key == null || args.key == '') {
-    return onError('setStorage', data, 'key required')
+    return onError(data, 'key required')
   }
-  onSuccess('setStorage', data)
+  onSuccess(data)
 }
 
 export function getStorage(data) {
   let args = data.args
   if (args.key == null || args.key == '') {
-    return onError('getStorage', data, 'key required')
+    return onError(data, 'key required')
   }
   let res = storage.get(args.key)
-  onSuccess('getStorage', data, {
+  onSuccess(data, {
     data: res.data,
     dataType: res.dataType
   })
@@ -356,18 +504,18 @@ export function getStorage(data) {
 
 export function clearStorage(data) {
   storage.clear()
-  onSuccess('clearStorage', data)
+  onSuccess(data)
 }
 
 export function startRecord(data) {
   record.startRecord({
     success: url => {
-      onSuccess('startRecord', data, {
+      onSuccess(data, {
         tempFilePath: url
       })
     },
     fail: err => {
-      return onError('startRecord', data, err.message)
+      return onError(data, err.message)
     }
   }).catch((e) => {
     console.warn(`Audio record failed: ${e.message}`)
@@ -394,10 +542,10 @@ export function playVoice(data) {
     audio.load()
     audio.play()
     once(audio, 'error', e => {
-      onError('playVoice', data, e.message)
+      onError(data, e.message)
     })
     once(audio, 'ended', () => {
-      onSuccess('playVoice', data)
+      onSuccess(data)
     })
   }
 }
@@ -440,7 +588,7 @@ export function getMusicPlayerState(data) {
     }
     obj.dataUrl = a.currentSrc
   }
-  onSuccess('getMusicPlayerState', data, obj)
+  onSuccess(data, obj)
 }
 
 export function operateMusicPlayer(data) {
@@ -487,30 +635,33 @@ export function operateMusicPlayer(data) {
       })
       break
   }
-  onSuccess('operateMusicPlayer', data)
+  onSuccess(data)
 }
 
 export function uploadFile(data) {
   let args = data.args
   if (!args.filePath || !args.url || !args.name) {
-    return onError('uploadFile', data, 'filePath, url and name required')
+    return onError(data, 'filePath, url and name required')
   }
   let file = fileStore[args.filePath]
-  if (!file) return onError('uploadFile', data, `${args.filePath} not found`)
+  if (!file) return onError(data, `${args.filePath} not found`)
 
   let headers = args.header || {}
+  if (headers.Referer || headers.rederer) {
+    console.warn('请注意，微信官方不允许设置请求 Referer')
+  }
   let formData = args.formData || {}
   let xhr = new XMLHttpRequest()
   xhr.open('POST', '/remoteProxy')
   xhr.onload = function () {
     if (xhr.status / 100 | 0 == 2) {
-      onSuccess('uploadFile', data)
+      onSuccess(data, {statusCode: xhr.status, data: xhr.responseText})
     } else {
-      onError('uploadFile', data, `request error ${xhr.status}`)
+      onError(data, `request error ${xhr.status}`)
     }
   }
   xhr.onerror = function (e) {
-    onError('uploadFile', data, `request error ${e.message}`)
+    onError(data, `request error ${e.message}`)
   }
   let key
   for (key in headers) {
@@ -528,54 +679,232 @@ export function uploadFile(data) {
 export function downloadFile(data) {
   let URL = (window.URL || window.webkitURL)
   let args = data.args
-  if (!args.url) return onError('downloadFile', data, 'url required')
+  if (!args.url) return onError(data, 'url required')
   let xhr = new XMLHttpRequest()
   xhr.responseType = 'arraybuffer'
   let headers = args.header || {}
-  xhr.open('GET', '/remoteProxy', true)
+  xhr.open('GET', '/remoteProxy?url=' + encodeURIComponent(args.url), true)
   xhr.onload = function () {
-    if (xhr.status / 100 | 0 == 2) {
+    if (xhr.status / 100 | 0 == 2 || xhr.status == 304) {
       let b = new Blob([xhr.response], {type: xhr.getResponseHeader("Content-Type")});
       let blob = URL.createObjectURL(b)
       fileStore[blob] = b
-      onSuccess('downloadFile', data, {
+      onSuccess(data, {
+        statusCode: xhr.status,
         tempFilePath: blob
       })
     } else {
-      onError('downloadFile', data, `request error ${xhr.status}`)
+      onError(data, `request error ${xhr.status}`)
     }
   }
   xhr.onerror = function (e) {
-    onError('downloadFile', data, `request error ${e.message}`)
+    onError(data, `request error ${e.message}`)
   }
   let key
   for (key in headers) {
     xhr.setRequestHeader(key, headers[key]);
   }
-  xhr.setRequestHeader('X-Remote', args.url);
   xhr.send(null)
 }
 
-function onError(name, data, message) {
+export function getSavedFileList(data) {
+  fileList.getFileList().then(list => {
+    onSuccess(data, {
+      fileList: list
+    })
+  }, err => {
+    onError(data, err.message)
+  })
+}
+
+export function removeSavedFile(data) {
+  let args = data.args
+  if (requiredArgs(['filePath'], data)) return
+  fileList.removeFile(args.filePath).then(() => {
+    onSuccess(data, {})
+  }, err => {
+    onError(data, err.message)
+  })
+}
+
+export function getSavedFileInfo(data) {
+  let args = data.args
+  if (requiredArgs(['filePath'], data)) return
+  fileList.getFileInfo(args.filePath).then(info => {
+    onSuccess(data, info)
+  }, err => {
+    onError(data, err.message)
+  })
+}
+
+export function openDocument(data) {
+  let args = data.args
+  if (requiredArgs(['filePath'], data)) return
+  console.warn('WEPT 中没有判定文件格式，返回为模拟返回')
+  onSuccess(data)
+  confirm(`<div>openDocument</div> ${args.filePath}`, true).then(() => {
+  }, () => {
+  })
+}
+
+export function getStorageInfo(data) {
+  let info = storage.info()
+  onSuccess(data, info)
+}
+
+export function removeStorage(data) {
+  let args = data.args
+  if (requiredArgs(['key'], data)) return
+
+  let o = storage.remove(args.key)
+  onSuccess(data, {data: o})
+}
+
+export function showToast(data) {
+  if (requiredArgs(['title'], data)) return
+  toast.show(data.args)
+  onSuccess(data)
+}
+
+export function hideToast(data) {
+  toast.hide()
+  onSuccess(data)
+}
+
+export function showModal(data) {
+  if (requiredArgs(['title', 'content'], data)) return
+  modal(data.args).then(confirm => {
+    onSuccess(data, { confirm })
+  })
+}
+
+export function showActionSheet(data) {
+  let args = data.args
+  if (requiredArgs(['itemList'], data)) return
+  if (!Array.isArray(args.itemList)) return onError(data, 'itemList must be Array')
+  args.itemList = args.itemList.slice(0, 6)
+  actionSheet(args).then(res => {
+    onSuccess(data, res)
+  })
+}
+
+export function getImageInfo(data) {
+  if (requiredArgs(['src'], data)) return
+  image(data.args.src).then(res => {
+    onSuccess(data, res)
+  }, err => {
+    onError(data, err.message)
+  })
+}
+
+export function base64ToTempFilePath(data) {
+  let uri = data.args.base64Data
+  // args.canvasId
+  onSuccess(data, {
+    filePath: dataURItoBlob(uri)
+  })
+}
+
+export function refreshSession(data) {
+  onSuccess(data)
+}
+
+export function showPickerView(data, args) {
+  const picker = new Picker(args)
+  picker.show()
+  //picker.on('cancel', () => {})
+  picker.on('select', n => {
+    publishPagEevent('bindPickerChange', {
+      type: 'change',
+      detail: {
+        value: n + ''
+      }
+    })
+  })
+}
+
+export function showDatePickerView(data, args) {
+  let picker
+  let eventName
+  if (args.mode == 'time') {
+    eventName = 'bindTimeChange'
+    picker = new TimePicker(args)
+  } else {
+    eventName = 'bindDateChange'
+    picker = new DatePicker(args)
+  }
+  picker.show()
+  picker.on('select', val => {
+    publishPagEevent(eventName, {
+      type: 'change',
+      detail: {
+        value: val
+      }
+    })
+  })
+}
+
+function requiredArgs(keys, data) {
+  let args = data.args
+  for (var i = 0, l = keys.length; i < l; i++) {
+    if (!args.hasOwnProperty(keys[i])) {
+      onError(data, `key ${keys[i]} required for ${data.sdkName}`)
+      return true
+    }
+  }
+  return false
+}
+
+function onError(data, message) {
   let obj = {
     command: "GET_ASSDK_RES",
     ext: merge.recursive(true, {}, data),
     msg: {
-      errMsg: `${name}:fail`
+      errMsg: `${data.sdkName}:fail`
     }
   }
   if (message) obj.msg.message = message
   toAppService(obj)
 }
 
-function onSuccess(name, data, extra = {}) {
+function onSuccess(data, extra = {}) {
+  if (!data.sdkName) throw new Error('sdkName not found')
   let obj = {
     command: "GET_ASSDK_RES",
     ext: merge.recursive(true, {}, data),
     msg: {
-      errMsg: `${name}:ok`
+      errMsg: `${data.sdkName}:ok`
     }
   }
   obj.msg = merge.recursive(true, obj.msg, extra)
   toAppService(obj)
 }
+
+function onCancel(data, extra = {}) {
+  let obj = {
+    command: "GET_ASSDK_RES",
+    ext: merge.recursive(true, {}, data),
+    msg: {
+      errMsg: `${data.sdkName}:cancel`
+    }
+  }
+  obj.msg = merge.recursive(true, obj.msg, extra)
+  toAppService(obj)
+}
+
+function publishPagEevent(eventName, extra) {
+  let obj = {
+    command: 'MSG_FROM_WEBVIEW',
+    msg: {
+      data: {
+        data: {
+          data: extra,
+          eventName
+        }
+      },
+      eventName: 'publish_PAGE_EVENT',
+    }
+  }
+  toAppService(obj)
+}
+

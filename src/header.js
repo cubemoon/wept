@@ -20,7 +20,9 @@ class Header extends Component {
       color: win.navigationBarTextStyle,
       title: win.navigationBarTitleText,
       loading: false,
-      back: false
+      backText: '返回',
+      back: false,
+      sendText: false
     }
     Bus.on('route', this.reset.bind(this))
   }
@@ -34,28 +36,59 @@ class Header extends Component {
       back: false
     }
     let curr = currentView()
+
     let winConfig = win.pages[curr.path] || {}
-    let state = {
-      backgroundColor: winConfig.navigationBarBackgroundColor || d.backgroundColor,
-      color: winConfig.navigationBarTextStyle || d.color,
-      title: winConfig.navigationBarTitleText || d.title,
-      loading: false,
-      back: curr.pid != null
+    let tabBar = window.__wxConfig__.tabBar
+
+    let top = tabBar && tabBar.position == 'top'
+    let hide = top && util.isTabbar(curr.url)
+    if (curr.isMap) {
+      this.setState({
+        hide: false,
+        backgroundColor: 'rgb(0, 0, 0)',
+        color: '#ffffff',
+        title: '位置',
+        loading: false,
+        backText: '取消',
+        sendText: true
+      })
+    } else {
+      this.setState({
+        hide,
+        backgroundColor: winConfig.navigationBarBackgroundColor || d.backgroundColor,
+        color: winConfig.navigationBarTextStyle || d.color,
+        title: winConfig.navigationBarTitleText || d.title,
+        loading: false,
+        backText: '返回',
+        sendText: false,
+        back: curr.pid != null
+      })
     }
-    this.setState(state)
   }
   onBack(e) {
     e.preventDefault()
     Bus.emit('back')
   }
+  onSend(e) {
+    // TODO send location
+    e.stopPropagation()
+    Bus.emit('location', currentView().location)
+    this.onBack(e)
+  }
   onOptions(e) {
     e.preventDefault()
     actionSheet({
+      share: {
+        text: '分享',
+        callback: function () {
+          Bus.emit('share')
+        }
+      },
       refresh: {
         text: '回主页',
         callback: function () {
           window.sessionStorage.removeItem('routes')
-          util.reload()
+          util.navigateHome()
         }
       },
       qrcode: {
@@ -101,7 +134,10 @@ class Header extends Component {
     })
   }
   onHome() {
-    util.reload()
+    util.navigateHome()
+  }
+  refresh() {
+    Bus.emit('refresh')
   }
   render() {
     let state = this.state
@@ -109,18 +145,17 @@ class Header extends Component {
       borderLeft: `1px solid ${state.color}`,
       borderBottom: `1px solid ${state.color}`
     }
-    let clz = cx('head-option-icon', {
-      'white': state.color == 'white'
-    })
     let homeClz = cx('head-home-icon', {
       'white': state.color == 'white'
     })
 
     return (
-      <div style={{backgroundColor: state.backgroundColor}}>
+      <div style={{backgroundColor: state.backgroundColor, display: state.hide ? 'none' : 'flex'}}>
         <div onClick={this.onBack} className="head-back" style={{display: state.back ? 'flex' : 'none' }}>
-          <i className="head-back-icon" style={iconStyle}></i>
-          <span style={{color: state.color}}>返回</span>
+          {do {
+            if (!state.sendText) <i className="head-back-icon" style={iconStyle}></i>
+          }}
+          <span style={{color: state.color}}>{state.backText}</span>
         </div>
         <div onClick={this.onHome} className="head-home" style={{display: state.back ? 'none' : 'flex' }}>
           <i className={homeClz}></i>
@@ -129,8 +164,18 @@ class Header extends Component {
           <i className="head-title-loading" style={{display: state.loading? 'inline-block' : 'none'}}></i>
           <span>{state.title}</span>
         </h3>
-        <div className="head-option" onClick={this.onOptions.bind(this)}>
-          <i className={clz}></i>
+        <div className="head-option">
+          {do {
+            if (state.sendText) {
+              <div onClick={this.onSend.bind(this)}>发送</div>
+            } else {
+              <div className="flex">
+                <i className={cx('head-option-refresh', { 'white': state.color == 'white' })} 
+                  onClick={this.refresh.bind(this)}></i>
+                <i className={cx('head-option-more', { 'white': state.color == 'white' })} onClick={this.onOptions.bind(this)}></i>
+              </div>
+            }
+          }}
         </div>
       </div>
     )

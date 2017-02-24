@@ -1,11 +1,10 @@
-const gulp = require('gulp')
-const webpack = require('webpack-stream');
-const babel = require('gulp-babel')
-const sourcemaps = require('gulp-sourcemaps');
-const gutil = require('gulp-util')
-const config = require('./webpack.config')
-const exec = require('child_process').exec
-const prodConfig = require('./webpack.prod')
+var gulp = require('gulp')
+var webpack = require('webpack-stream');
+var babel = require('gulp-babel')
+var sourcemaps = require('gulp-sourcemaps');
+var config = require('./webpack.config')
+var prodConfig = require('./webpack.prod')
+var gutil = require('gulp-util')
 
 // build server javascript
 gulp.task('babel', function () {
@@ -39,11 +38,12 @@ gulp.task('webpack', function () {
 gulp.task('watch', function () {
   gulp.watch('lib/*.js')
     .on('change', function (file) {
-      gulp.src(file.path)
-      .pipe(sourcemaps.init())
-      .pipe(babel())
-      .pipe(sourcemaps.write('.'))
-      .pipe(gulp.dest('build'))
+      gulp.src('lib/*.js')
+        .pipe(babel())
+        .pipe(gulp.dest('build'))
+        .end(() => {
+          gutil.log('Rebuild ' + file.path)
+        })
     })
   //gulp.watch('src/*.js', ['webpack'])
 

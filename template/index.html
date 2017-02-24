@@ -4,8 +4,9 @@
   <link href="https://res.wx.qq.com/mpres/htmledition/images/favicon218877.ico" rel="Shortcut Icon">
   <meta charset="UTF-8" />
   <link rel="stylesheet" type="text/css" href="/css/index.css?v={{= _.version}}">
+  <link rel="stylesheet" type="text/css" href="/css/app.css?v={{= _.version}}">
   <meta name="viewport" content="width=device-width, height=device-height,user-scalable=no, initial-scale=1.0" />
-  <script src="/script/recorder.js?v={{= _.version}}"></script>
+  <script src="/script/recorder.js"></script>
 </head>
 <body>
   <audio id="audio" type="audio/mp3" style="display:none;"></audio>
@@ -15,7 +16,7 @@
   </div>
   <div class="scrollable">
   </div>
-  <div class="tabbar-root">
+  <div class="tabbar-root {{if _.topBar}}tabbar-root-top{{/}}">
   </div>
   <script>
     var __wxConfig__ = {{= _.config}}
@@ -23,9 +24,5 @@
     var __ip__ = '{{= _.ip}}'
   </script>
   <script src="/script/build.js?v={{= _.version}}"></script>
-  <iframe src="/appservice" id="service" seamless="seamless"
-    sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-    frameborder="0" width="0" height="0"
-    style="width:0;height:0;border:0; display:none;"></iframe>
 </body>
 </html>
